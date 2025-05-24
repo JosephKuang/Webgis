@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>北京交通与景点交互式地图可视化</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <style>
+        .airport-label {
+            pointer-events: none;
+        }
+
+        #map {
+            height: 100vh;
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 30px;
+            left: 10px;
+            padding: 10px;
+            background: white;
+            color: #555;
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+            display: flex;
+            gap: 20px;
+        }
+
+        .legend-section {
+            line-height: 18px;
+        }
+
+        .legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+
+        .panel {
+            background: white;
+            padding: 10px;
+            border-radius: 6px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            margin-bottom: 10px;
+            z-index: 1000;
+        }
+
+        .search-panel {
+            /* 移除定位属性，交由 #search-container 控制布局 */
+        }
+
+        #search-container {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 10px;
+            z-index: 1000;
+        }
+
+        .search-panel input[type="text"] {
+            width: 150px;
+            padding: 5px 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-bottom: 6px;
+        }
+
+        .search-panel button {
+            width: 100%;
+            padding: 6px 0;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .search-panel button:hover {
+            background-color: #0056b3;
+        }
+
+        #scenic-autocomplete-list {
+            position: absolute;
+            background: white;
+            border: 1px solid #ccc;
+            z-index: 1001;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        #bufferResult li {
+            cursor: pointer;
+            padding: 2px 0;
+        }
+
+        #bufferResult li:hover {
+            color: #007bff;
+            text-decoration: underline;
+        }
+    </style>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+
+<body>
+    <div id="map"></div>
+    
+    <button onclick="jumpToLocation()"
+        style="position: absolute; bottom: 190px; right: 10px; z-index: 1000; background-color: #007bff; color: white; border: none; padding: 10px 16px; border-radius: 5px; font-size: 14px; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.2);">
+        北京视图</button>
+    <div id="search-container">
+        <div class="panel search-panel">
+            <select id="searchType" style="margin-bottom: 6px;">
+                <option value="station">火车站</option>
+                <option value="scenic">景点</option>
+            </select>
+            <input type="text" id="searchInput" placeholder="输入名称" autocomplete="off">
+            <div id="autocomplete-list-container"></div>
+            <button onclick="search()">搜索</button>
+            <button onclick="findScenicWithinBuffer()" style="margin-top: 4px;">查找10公里范围景点</button>
+            <div id="bufferResult" style="margin-top: 6px; max-height: 120px; overflow-y: auto; font-size: 13px;"></div>
+        </div>
+    </div>
+    <div
+        style="position: absolute; bottom: 250px; right: 10px; z-index: 1000; background: white; padding: 8px; border-radius: 5px;">
+        <label><input type="checkbox" id="toggleBus" onchange="toggleTransportLayer()"> 显示公交线路</label><br>
+        <label><input type="checkbox" id="toggleSubway" onchange="toggleTransportLayer()"> 显示地铁线路</label><br>
+        <label><input type="checkbox" id="toggleAirport" checked onchange="toggleAirportLayer()"> 显示机场</label>
+    </div>
+    <div
+        style="position: absolute; bottom: 30px; right: 10px; z-index: 1000; background: white; padding: 8px; border-radius: 5px;">
+        <strong>景点等级：</strong><br>
+        <label><input type="radio" name="level" value="all" checked onchange="filterScenicLevel('all')"> 全部</label><br>
+        <label><input type="radio" name="level" value="5A" onchange="filterScenicLevel('5A')"> 5A</label><br>
+        <label><input type="radio" name="level" value="4A" onchange="filterScenicLevel('4A')"> 4A</label>
+    </div>
+    <div
+        style="position: absolute; bottom: 140px; right: 10px; z-index: 1000; background: white; padding: 8px; border-radius: 5px;">
+        <label><input type="checkbox" id="toggleStation" checked onchange="toggleStationLayer()"> 显示火车站</label>
+    </div>
+    <div class="legend" id="legend">
+        <div class="legend-section">
+            <strong>人流强度</strong><br>
+            <i style="background: blue"></i> 非常低<br>
+            <i style="background: lime"></i> 偏低<br>
+            <i style="background: yellow"></i> 中等<br>
+            <i style="background: orange"></i> 偏高<br>
+            <i style="background: red"></i> 非常高
+        </div>
+        <div class="legend-section">
+            <strong>图例</strong><br>
+            <i style="background: #666; border-radius: 50%; width: 12px; height: 12px; display: inline-block;"></i>
+            火车站<br>
+            <i style="background: green; border-radius: 50%; width: 12px; height: 12px; display: inline-block;"></i>
+            景点<br>
+            <i style="background: blue; border-radius: 3px; width: 12px; height: 12px; display: inline-block;"></i> 机场
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet-measure/dist/leaflet-measure.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-measure/dist/leaflet-measure.css" />
+    <script>
+        var map = L.map('map').setView([40.25, 116.4074], 9);
+
+        const lightBase = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        });
+
+        const googleSat = L.tileLayer(
+            'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+            {
+                attribution: '© Google',
+                maxZoom: 19
+            }
+        );
+
+        lightBase.addTo(map);
+
+        const baseMaps = {
+            "标准底图": lightBase,
+            "卫星底图": googleSat
+        };
+        L.control.layers(baseMaps, null, { position: 'topleft' }).addTo(map);
+
+        function jumpToLocation() {
+            map.setView([40.25, 116.4074], 9);
+        }
+
+        let allScenicData = null;
+        let scenicLayer = null;
+        let scenicNames = [];
+        let airportLayer = null;
+        let airportLabels = [];
+
+        function filterScenicLevel(level) {
+            if (scenicLayer) {
+                map.removeLayer(scenicLayer);
+            }
+            scenicLayer = renderScenicLayer(level);
+        }
+
+        function renderScenicLayer(level) {
+            scenicNames = [];
+            return L.geoJSON(allScenicData, {
+                filter: function (feature) {
+                    if (!feature.properties || !feature.properties.等级) return false;
+                    if (level === 'all') return true;
+                    return feature.properties.等级 === level;
+                },
+                pointToLayer: function (feature, latlng) {
+                    return L.circleMarker(latlng, {
+                        radius: 6,
+                        fillColor: 'green',
+                        color: '#2c662d',
+                        weight: 1,
+                        opacity: 1,
+                        fillOpacity: 0.8
+                    });
+                },
+                onEachFeature: function (feature, layer) {
+                    if (feature.properties && feature.properties.名称) {
+                        layer.bindPopup(feature.properties.名称);
+                        scenicNames.push(feature.properties.名称);
+                    }
+                    layer.on('mouseover', function () {
+                        layer.setStyle({ radius: 10 });
+                    });
+                    layer.on('mouseout', function () {
+                        layer.setStyle({ radius: 6 });
+                    });
+                }
+            }).addTo(map);
+        }
+
+        fetch('data/北京景点.geojson')
+            .then(res => res.json())
+            .then(data => {
+                allScenicData = data;
+                scenicLayer = renderScenicLayer('all');
+            });
+
+        fetch('data/北京机场.geojson')
+            .then(res => res.json())
+            .then(data => {
+                airportLayer = L.geoJSON(data, {
+                    style: {
+                        color: 'blue',
+                        weight: 2,
+                        fillOpacity: 0.2
+                    },
+                    onEachFeature: function (feature, layer) {
+                        if (feature.properties && feature.properties.name) {
+                            layer.bindPopup("机场：" + feature.properties.name);
+                            const label = L.marker(layer.getLatLng(), {
+                                icon: L.divIcon({
+                                    className: 'airport-label',
+                                    html: '<div style="font-size: 12px; color: blue; background: rgba(255,255,255,0.7); padding: 2px 4px; border-radius: 3px;">' + feature.properties.name + '</div>',
+                                    iconSize: [100, 20],
+                                    iconAnchor: [50, 0]
+                                })
+                            }).addTo(map);
+                            airportLabels.push(label);
+                        }
+                    }
+                }).addTo(map);
+                const checkbox = document.getElementById('toggleAirport');
+                if (checkbox && !checkbox.checked) {
+                    map.removeLayer(airportLayer);
+                    airportLabels.forEach(label => map.removeLayer(label));
+                }
+            });
+
+        fetch('data/北京市边界.geojson')
+            .then(res => res.json())
+            .then(data => {
+                L.geoJSON(data, {
+                    style: {
+                        color: 'red',
+                        weight: 3,
+                        fillOpacity: 0.1
+                    }
+                }).addTo(map);
+            });
+
+        let busLayer = null;
+        let subwayLayer = null;
+
+        fetch('data/北京市bus路线.geojson')
+            .then(res => res.json())
+            .then(data => {
+                busLayer = L.geoJSON(data, {
+                    style: {
+                        color: '#008000',
+                        weight: 1,
+                        opacity: 0.6
+                    },
+                    onEachFeature: function (feature, layer) {
+                        if (feature.properties && feature.properties.name) {
+                            layer.bindPopup("公交线路：" + feature.properties.name);
+                        }
+                    }
+                });
+            });
+
+        fetch('data/北京市地铁线路.geojson')
+            .then(res => res.json())
+            .then(data => {
+                subwayLayer = L.geoJSON(data, {
+                    style: {
+                        color: '#800080',
+                        weight: 2,
+                        opacity: 0.7
+                    },
+                    onEachFeature: function (feature, layer) {
+                        if (feature.properties && feature.properties.name) {
+                            layer.bindPopup("地铁线路：" + feature.properties.name);
+                        }
+                        layer.on('mouseover', function () {
+                            layer.setStyle({
+                                weight: 6,
+                                opacity: 1
+                            });
+                            layer.bringToFront();
+                        });
+                        layer.on('mouseout', function () {
+                            layer.setStyle({
+                                weight: 2,
+                                opacity: 0.7
+                            });
+                        });
+                    }
+                });
+            });
+
+        let stationNames = [];
+        var stationLayer;
+
+        fetch('data/北京市火车站点.geojson')
+            .then(res => res.json())
+            .then(data => {
+                stationLayer = L.geoJSON(data, {
+                    pointToLayer: function (feature, latlng) {
+                        return L.circleMarker(latlng, {
+                            radius: 4,
+                            fillColor: '#666',
+                            color: '#333',
+                            weight: 0.5,
+                            opacity: 1,
+                            fillOpacity: 0.9
+                        });
+                    },
+                    onEachFeature: function (feature, layer) {
+                        if (feature.properties && feature.properties.name) {
+                            layer.bindPopup("火车站：" + feature.properties.name);
+                            stationNames.push(feature.properties.name);
+                        }
+                    }
+                }).addTo(map);
+                const checkbox = document.getElementById('toggleStation');
+                if (checkbox && !checkbox.checked) {
+                    map.removeLayer(stationLayer);
+                }
+            });
+
+        $(document).ready(function () {
+            $('#searchInput').on('input', function () {
+                const input = $(this).val().trim();
+                $('#autocomplete-list').remove();
+                if (!input) return;
+                const type = $('#searchType').val();
+                let suggestions = [];
+                if (type === 'station') {
+                    suggestions = stationNames.filter(name => name.includes(input)).slice(0, 5);
+                } else if (type === 'scenic') {
+                    suggestions = scenicNames.filter(name => name.includes(input)).slice(0, 5);
+                }
+                if (suggestions.length === 0) return;
+                const list = $('<div id="autocomplete-list" style="position:absolute; background:white; border:1px solid #ccc; z-index:1001; max-height:150px; overflow-y:auto;"></div>');
+                suggestions.forEach(name => {
+                    const item = $('<div style="padding:4px; cursor:pointer;"></div>').text(name);
+                    item.on('click', function () {
+                        $('#searchInput').val(name);
+                        $('#autocomplete-list').remove();
+                    });
+                    list.append(item);
+                });
+                $(this).after(list);
+            });
+
+            $(document).on('click', function (e) {
+                if (!$(e.target).closest('#searchInput').length) {
+                    $('#autocomplete-list').remove();
+                }
+            });
+
+            $('#searchInput').on('focus', function () {
+                $('#autocomplete-list').remove();
+                const type = $('#searchType').val();
+                let suggestions = [];
+                if (type === 'station') {
+                    suggestions = [...stationNames].sort(() => 0.5 - Math.random()).slice(0, 5);
+                } else if (type === 'scenic') {
+                    suggestions = [...scenicNames].sort(() => 0.5 - Math.random()).slice(0, 5);
+                }
+                if (suggestions.length === 0) return;
+                const inputOffset = $(this).offset();
+                const inputHeight = $(this).outerHeight();
+                const inputWidth = $(this).outerWidth();
+                const list = $('<div id="autocomplete-list"></div>').css({
+                    position: 'absolute',
+                    background: 'white',
+                    border: '1px solid #ccc',
+                    zIndex: 1001,
+                    maxHeight: '150px',
+                    overflowY: 'auto',
+                    left: inputOffset.left,
+                    top: inputOffset.top + inputHeight,
+                    width: inputWidth
+                });
+                suggestions.forEach(name => {
+                    const item = $('<div style="padding:4px; cursor:pointer;"></div>').text(name);
+                    item.on('click', function () {
+                        $('#searchInput').val(name);
+                        $('#autocomplete-list').remove();
+                    });
+                    list.append(item);
+                });
+                $('body').append(list);
+            });
+
+            $('#searchType').on('change', function () {
+                $('#searchInput').val('');
+                $('#autocomplete-list').remove();
+            });
+        });
+
+        var heat = L.heatLayer([
+            [40.35518173, 116.0113495, 0.9],
+            [39.99150908, 116.3865457, 0.85],
+            [39.93572695, 116.3799647, 0.7],
+            [39.91634821, 116.3908028, 0.95],
+            [40.43055117, 116.5591602, 0.8],
+            [40.27091992, 116.2187822, 0.6],
+            [39.88054106, 116.4045941, 0.9],
+            [39.99731356, 116.2662954, 0.95],
+            [40.00526407, 116.2972405, 0.7],
+            [40.33458825, 116.0314933, 0.6],
+            [39.96112454, 116.1775812, 0.5],
+            [39.89198234, 116.0211545, 0.5],
+            [39.86464761, 116.1118224, 0.45],
+            [39.92180812, 116.3803935, 0.75],
+            [40.17269785, 116.686228, 0.55],
+            [39.94075522, 116.3306149, 0.8],
+            [39.88564767, 116.3201764, 0.7],
+            [39.87446584, 116.6709797, 0.4],
+            [39.86660285, 116.488484, 0.85],
+            [40.41179469, 116.2946038, 0.6],
+            [39.82756065, 116.2959603, 0.5],
+            [39.63758068, 115.5937997, 0.4],
+            [40.00060679, 116.2034762, 0.6],
+            [40.18061359, 116.7909439, 0.4],
+            [39.93629358, 116.3304497, 0.75],
+            [40.27232401, 116.9731142, 0.4],
+            [40.07742731, 117.1405052, 0.5],
+            [39.8744674, 116.1845504, 0.45],
+            [40.37513134, 116.8369666, 0.3],
+            [39.94137071, 116.4742944, 0.6],
+            [39.95225381, 116.4087052, 0.6],
+            [40.10572172, 116.0786326, 0.45],
+            [40.37513134, 116.8369666, 0.3],
+            [40.38307802, 116.6201319, 0.5],
+            [39.86849944, 116.0797707, 0.4]
+        ], {
+            radius: 25,
+            blur: 15,
+            maxZoom: 17,
+            minOpacity: 0.5,
+            gradient: {
+                0.2: 'blue',
+                0.4: 'lime',
+                0.6: 'yellow',
+                0.8: 'orange',
+                1.0: 'red'
+            }
+        }).addTo(map);
+
+        function toggleTransportLayer() {
+            const showBus = document.getElementById('toggleBus').checked;
+            const showSubway = document.getElementById('toggleSubway').checked;
+
+            if (busLayer) {
+                if (showBus && !map.hasLayer(busLayer)) {
+                    map.addLayer(busLayer);
+                } else if (!showBus && map.hasLayer(busLayer)) {
+                    map.removeLayer(busLayer);
+                }
+            }
+
+            if (subwayLayer) {
+                if (showSubway && !map.hasLayer(subwayLayer)) {
+                    map.addLayer(subwayLayer);
+                } else if (!showSubway && map.hasLayer(subwayLayer)) {
+                    map.removeLayer(subwayLayer);
+                }
+            }
+        }
+
+        function toggleStationLayer() {
+            const checkbox = document.getElementById('toggleStation');
+            if (checkbox.checked) {
+                if (stationLayer && !map.hasLayer(stationLayer)) {
+                    map.addLayer(stationLayer);
+                }
+            } else {
+                if (stationLayer && map.hasLayer(stationLayer)) {
+                    map.removeLayer(stationLayer);
+                }
+            }
+        }
+
+        function toggleAirportLayer() {
+            const checkbox = document.getElementById('toggleAirport');
+            if (checkbox.checked) {
+                if (airportLayer && !map.hasLayer(airportLayer)) {
+                    map.addLayer(airportLayer);
+                    airportLabels.forEach(label => map.addLayer(label));
+                }
+            } else {
+                if (airportLayer && map.hasLayer(airportLayer)) {
+                    map.removeLayer(airportLayer);
+                    airportLabels.forEach(label => map.removeLayer(label));
+                }
+            }
+        }
+
+        function search() {
+            const type = document.getElementById('searchType').value;
+            const name = document.getElementById('searchInput').value.trim();
+            if (!name) return;
+
+            if (type === 'station') {
+                if (!stationLayer) {
+                    alert("火车站数据尚未加载，请稍候再试。");
+                    return;
+                }
+
+                let found = false;
+                stationLayer.eachLayer(function (layer) {
+                    const props = layer.feature.properties;
+                    if (props && props.name && props.name.includes(name)) {
+                        layer.openPopup();
+                        map.setView(layer.getLatLng(), 14);
+                        found = true;
+                    }
+                });
+                if (!found) {
+                    alert("未找到相关火车站：" + name);
+                }
+            } else if (type === 'scenic') {
+                if (!scenicLayer) {
+                    alert("景点数据尚未加载，请稍候再试。");
+                    return;
+                }
+                let found = false;
+                scenicLayer.eachLayer(function (layer) {
+                    const props = layer.feature.properties;
+                    if (props && props.名称 && props.名称.includes(name)) {
+                        layer.openPopup();
+                        map.setView(layer.getLatLng(), 14);
+                        found = true;
+                    }
+                });
+                if (!found) {
+                    alert("未找到相关景点：" + name);
+                }
+            }
+        }
+
+        function findScenicWithinBuffer() {
+            const type = document.getElementById('searchType').value;
+            const name = document.getElementById('searchInput').value.trim();
+            const resultDiv = document.getElementById('bufferResult');
+            if (type !== 'station' || !name) {
+                resultDiv.innerHTML = "<span style='color:#d00'>请先选择“火车站”并输入站名</span>";
+                return;
+            }
+            if (!stationLayer || !scenicLayer) {
+                alert("数据尚未加载，请稍候再试。");
+                return;
+            }
+            let foundStation = null;
+            stationLayer.eachLayer(function (layer) {
+                const props = layer.feature.properties;
+                if (props && props.name && props.name.includes(name)) {
+                    foundStation = layer;
+                }
+            });
+            if (!foundStation) {
+                resultDiv.innerHTML = "<span style='color:#d00'>未找到该火车站。</span>";
+                return;
+            }
+            const latlng = foundStation.getLatLng();
+            const bufferRadius = 10000;
+            if (window._bufferCircle) {
+                map.removeLayer(window._bufferCircle);
+            }
+            window._bufferCircle = L.circle(latlng, { radius: bufferRadius, color: "#007bff", fill: false, weight: 2, dashArray: "4" }).addTo(map);
+            map.fitBounds(window._bufferCircle.getBounds(), { maxZoom: 13 });
+            let highlights = [];
+            scenicLayer.eachLayer(function (layer) {
+                if (map.distance(latlng, layer.getLatLng()) <= bufferRadius) {
+                    highlights.push(layer);
+                    layer.setStyle && layer.setStyle({ fillColor: "#ffa500", color: "#ff6600" });
+                } else {
+                    layer.setStyle && layer.setStyle({ fillColor: "green", color: "#2c662d" });
+                }
+            });
+            if (highlights.length > 0) {
+                resultDiv.innerHTML = "<strong>附近景点：</strong><ul style='padding-left: 16px; margin-top: 4px;'>";
+                highlights.forEach(layer => {
+                    const name = layer.getPopup().getContent().replace("景点：", "");
+                    resultDiv.innerHTML += `<li onclick="openScenicPopup('${name}')" style="cursor: pointer;">${name}</li>`;
+                });
+                resultDiv.innerHTML += "</ul>";
+            } else {
+                resultDiv.innerHTML = "";
+                alert("缓冲区内未找到景点。");
+            }
+        }
+
+        function openScenicPopup(name) {
+            scenicLayer.eachLayer(function (layer) {
+                const props = layer.feature.properties;
+                if (props && props.名称 && props.名称 === name) {
+                    layer.openPopup();
+                    map.setView(layer.getLatLng(), 14);
+                }
+            });
+        }
+    </script>
+</body>
+
+</html>
